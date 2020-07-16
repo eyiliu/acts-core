@@ -95,7 +95,8 @@ TrackAlignmentState trackAlignmentState(
     const MultiTrajectory<source_link_t>& multiTraj, const size_t& entryIndex,
     const std::pair<ActsMatrixX<BoundParametersScalar>,
                     std::unordered_map<size_t, size_t>>& globalTrackParamsCov,
-    const std::unordered_map<const Surface*, size_t>& idxedAlignSurfaces) {
+    const std::unordered_map<const Surface*, size_t>& idxedAlignSurfaces,
+    const std::bitset<6>& alignMask) {
   using CovMatrix = typename parameters_t::CovMatrix_t;
 
   // Construct an alignment state
@@ -203,7 +204,7 @@ TrackAlignmentState trackAlignmentState(
 
     // (c) Get and fill the residual
     alignState.residual.segment(iMeasurement, measdim) =
-        state.calibrated().template head(measdim) - H * state.filtered();
+        state.calibrated().template head(measdim) - H * state.smoothed();
 
     // (d) @Todo: Get the derivative of alignment parameters w.r.t. measurement
     // or residual
@@ -220,9 +221,16 @@ TrackAlignmentState trackAlignmentState(
       const AlignmentToBoundMatrix alignToBound =
           surface->alignmentToBoundDerivative(gctx, pathToFree, position,
                                               momentum.normalized());
+      //@Todo: use separate consideration for different surfaces
+      AlignmentMatrix project = AlignmentMatrix::Identity();
+      for (unsigned int iAlignParam = 0; iAlignParam < 6; iAlignParam++) {
+        project(iAlignParam, iAlignParam) = alignMask[iAlignParam];
+      }
+      // Residual is calculated as the measurement - parameters, thus we need a
+      // minus sign below
       alignState.alignmentToResidualDerivative.block(
           iMeasurement, iSurface * eAlignmentParametersSize, measdim,
-          eAlignmentParametersSize) = H * alignToBound;
+          eAlignmentParametersSize) = -H * (alignToBound * project);
     }
 
     // (e) Extract and fill the track parameters covariance matrix for only

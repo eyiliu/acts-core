@@ -42,7 +42,7 @@ using AlignmentVector =
     ActsVector<AlignmentParametersScalar, eAlignmentParametersSize>;
 using AlignmentRowVector =
     ActsRowVector<AlignmentParametersScalar, eAlignmentParametersSize>;
-using AlingmentMatrix =
+using AlignmentMatrix =
     ActsMatrix<AlignmentParametersScalar, eAlignmentParametersSize,
                eAlignmentParametersSize>;
 using AlignmentToLocalCartesianMatrix =
