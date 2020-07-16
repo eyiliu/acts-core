@@ -43,19 +43,25 @@ struct AlignmentOptions {
   /// AlignmentOptions
   ///
   /// @param fOptions The fit options
+  /// @param aTransformUpdater The updater to update aligned transform
   /// @param aDetElements The alignable detector elements
   /// @param chi2CufOff The alignment chi2 tolerance
   /// @param maxIters The alignment maximum iterations
+  //  @param iterState The alignment mask for each
+  //  iteration @Todo: use a json file to handle this
   AlignmentOptions(
       const fit_options_t& fOptions,
       const AlignedTransformUpdater& aTransformUpdater,
       const std::vector<Acts::DetectorElementBase*>& aDetElements = {},
-      double chi2CutOff = 1, size_t maxIters = 5)
+      double chi2CutOff = 0.05, size_t maxIters = 5,
+      const std::map<unsigned int, std::bitset<Acts::eAlignmentParametersSize>>&
+          iterState = {})
       : fitOptions(fOptions),
         alignedTransformUpdater(aTransformUpdater),
         alignedDetElements(aDetElements),
-        deltaChi2CutOff(chi2CutOff),
-        maxIterations(maxIters) {}
+        averageChi2ONdfCutOff(chi2CutOff),
+        maxIterations(maxIters),
+        iterationState(iterState) {}
 
   // The fit options
   fit_options_t fitOptions;
@@ -67,10 +73,15 @@ struct AlignmentOptions {
   std::vector<Acts::DetectorElementBase*> alignedDetElements;
 
   // The alignment tolerance
-  double deltaChi2CutOff = 1;
+  double averageChi2ONdfCutOff = 0.05;
 
   // The maximum number of iterations to run alignment
   size_t maxIterations = 5;
+
+  // The covariance of the source links and alignment mask for different
+  // iterations
+  std::map<unsigned int, std::bitset<Acts::eAlignmentParametersSize>>
+      iterationState;
 };
 
 /// @brief Alignment result struct
@@ -79,17 +90,23 @@ struct AlignmentResult {
   // The change of alignment parameters
   Acts::ActsVectorX<Acts::BoundParametersScalar> deltaAlignmentParameters;
 
-  // The change of chi2
-  double deltaChi2 = 0;
-
   // The covariance of alignment parameters
   Acts::ActsMatrixX<Acts::BoundParametersScalar> alignmentCovariance;
 
-  // The minimized average chi2 per track
-  // double averagedChi2 = std::numeric_limits<double>::max();
+  // The avarage chi2/ndf (ndf is the measurement dim)
+  double averageChi2ONdf = std::numeric_limits<double>::max();
+
+  // The delta chi2
+  double deltaChi2 = std::numeric_limits<double>::max();
+
+  // The chi2
+  double chi2 = 0;
 
   // The number of alignment dof
-  size_t dof = 0;
+  size_t alignmentDof = 0;
+
+  // The measurement dim from all track
+  size_t measurementDim = 0;
 
   Acts::Result<void> result{Acts::Result<void>::success()};
 };
@@ -120,6 +137,8 @@ struct Alignment {
   /// @param sParameters The initial track parameters
   /// @param fitOptions The fit Options steering the fit
   /// @param idxedAlignSurfaces The idxed surfaces to be aligned
+  /// @param alignMask The alignment mask (same for all detector element for the
+  /// moment)
   ///
   /// @result The alignment state for a single track
   template <typename source_link_t, typename start_parameters_t,
@@ -129,10 +148,12 @@ struct Alignment {
       const std::vector<source_link_t>& sourcelinks,
       const start_parameters_t& sParameters, const fit_options_t& fitOptions,
       const std::unordered_map<const Acts::Surface*, size_t>&
-          idxedAlignSurfaces) const {
+          idxedAlignSurfaces,
+      const std::bitset<Acts::eAlignmentParametersSize>& alignMask) const {
     // Perform the fit
     auto fitRes = m_fitter.fit(sourcelinks, sParameters, fitOptions);
     if (not fitRes.ok()) {
+      ACTS_WARNING("Fit failure");
       return fitRes.error();
     }
     // The fit results
@@ -144,8 +165,9 @@ struct Alignment {
     // Calculate the alignment state
     const auto alignState = Acts::detail::trackAlignmentState(
         gctx, fitOutput.fittedStates, fitOutput.trackTip, globalTrackParamsCov,
-        idxedAlignSurfaces);
+        idxedAlignSurfaces, alignMask);
     if (alignState.alignmentDof == 0) {
+      ACTS_WARNING("No alignment dof on track");
       return AlignmentError::NoAlignmentDofOnTrack;
     }
     return alignState;
@@ -166,15 +188,19 @@ struct Alignment {
   /// @param alignedTransformUpdater The updater for updating the aligned
   /// transform of the detector element
   /// @param alignResult [in, out] The aligned result
+  /// @param alignMask The alignment mask (same for all measurements now)
   template <typename trajectory_container_t,
             typename start_parameters_container_t, typename fit_options_t>
   Acts::Result<void> updateAlignmentParameters(
-      const trajectory_container_t& trajectoryCollection,
+      trajectory_container_t& trajectoryCollection,
       const start_parameters_container_t& startParametersCollection,
       const fit_options_t& fitOptions,
       const std::vector<Acts::DetectorElementBase*>& alignedDetElements,
       const AlignedTransformUpdater& alignedTransformUpdater,
-      AlignmentResult& alignResult) const {
+      AlignmentResult& alignResult,
+      const std::bitset<Acts::eAlignmentParametersSize>& alignMask =
+          std::bitset<Acts::eAlignmentParametersSize>(std::string("111111")))
+      const {
     // The number of trajectories must be eual to the number of starting
     // parameters
     assert(trajectoryCollection.size() == startParametersCollection.size());
@@ -188,17 +214,21 @@ struct Alignment {
     }
 
     // The total alignment degree of freedom
-    alignResult.dof =
+    alignResult.alignmentDof =
         idxedAlignSurfaces.size() * Acts::eAlignmentParametersSize;
     // Initialize derivative of chi2 w.r.t. aligment parameters for all tracks
     Acts::ActsVectorX<Acts::BoundParametersScalar> sumChi2Derivative =
-        Acts::ActsVectorX<Acts::BoundParametersScalar>::Zero(alignResult.dof);
+        Acts::ActsVectorX<Acts::BoundParametersScalar>::Zero(
+            alignResult.alignmentDof);
     Acts::ActsMatrixX<Acts::BoundParametersScalar> sumChi2SecondDerivative =
-        Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(alignResult.dof,
-                                                             alignResult.dof);
+        Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(
+            alignResult.alignmentDof, alignResult.alignmentDof);
     // Copy the fit options
     fit_options_t fitOptionsWithRefSurface = fitOptions;
     // Calculate contribution to chi2 derivatives from all input trajectories
+    // @Todo: How to update the source link error iteratively?
+    alignResult.chi2 = 0;
+    alignResult.measurementDim = 0;
     for (unsigned int iTraj = 0; iTraj < trajectoryCollection.size(); iTraj++) {
       const auto& sourcelinks = trajectoryCollection.at(iTraj);
       const auto& sParameters = startParametersCollection.at(iTraj);
@@ -208,10 +238,10 @@ struct Alignment {
       // The result for one single track
       auto evaluateRes = evaluateTrackAlignmentState(
           fitOptions.geoContext, sourcelinks, sParameters,
-          fitOptionsWithRefSurface, idxedAlignSurfaces);
+          fitOptionsWithRefSurface, idxedAlignSurfaces, alignMask);
       if (not evaluateRes.ok()) {
-        ACTS_WARNING("Evaluation of alignment state for track" << iTraj
-                                                               << "failed");
+        ACTS_WARNING("Evaluation of alignment state for track " << iTraj
+                                                                << " failed");
         continue;
       }
       const auto& alignState = evaluateRes.value();
@@ -237,36 +267,44 @@ struct Alignment {
                   Acts::eAlignmentParametersSize);
         }
       }
+      alignResult.chi2 += alignState.chi2;
+      alignResult.measurementDim += alignState.measurementDim;
     }
-    // Get the inverse of chi2 second derivative matrix
+    alignResult.averageChi2ONdf = alignResult.chi2 / alignResult.measurementDim;
+
+    // Get the inverse of chi2 second derivative matrix (we need this to
+    // calculate the covariance of the alignment parameters)
     // @Todo: use more stable method for solving the inverse
+    size_t alignDof = alignResult.alignmentDof;
     Acts::ActsMatrixX<Acts::BoundParametersScalar>
         sumChi2SecondDerivativeInverse =
-            Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(
-                alignResult.dof, alignResult.dof);
+            Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(alignDof,
+                                                                 alignDof);
     sumChi2SecondDerivativeInverse = sumChi2SecondDerivative.inverse();
     if (sumChi2SecondDerivativeInverse.hasNaN()) {
-      ACTS_ERROR("Chi2 second derivative inverse has NaN");
-      return AlignmentError::AlignmentParametersUpdateFailure;
+      ACTS_WARNING("Chi2 second derivative inverse has NaN");
+      // return AlignmentError::AlignmentParametersUpdateFailure;
     }
 
     // Initialize the alignment results
     alignResult.deltaAlignmentParameters =
-        Acts::ActsVectorX<Acts::BoundParametersScalar>::Zero(alignResult.dof);
+        Acts::ActsVectorX<Acts::BoundParametersScalar>::Zero(alignDof);
     alignResult.alignmentCovariance =
-        Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(alignResult.dof,
-                                                             alignResult.dof);
+        Acts::ActsMatrixX<Acts::BoundParametersScalar>::Zero(alignDof,
+                                                             alignDof);
     // Solve the linear equation to get alignment parameters change
     alignResult.deltaAlignmentParameters =
         -sumChi2SecondDerivative.fullPivLu().solve(sumChi2Derivative);
-    ACTS_VERBOSE("alignResult.deltaAlignmentParameters = \n "
-                 << alignResult.deltaAlignmentParameters);
+    ACTS_INFO("The solved delta of alignmentParameters = \n "
+              << alignResult.deltaAlignmentParameters);
     // Alignment parameters covariance
     alignResult.alignmentCovariance = 2 * sumChi2SecondDerivativeInverse;
     // chi2 change
     alignResult.deltaChi2 = 0.5 * sumChi2Derivative.transpose() *
                             alignResult.deltaAlignmentParameters;
+
     // Update the aligned transform
+    Acts::AlignmentVector deltaAlignmentParam = Acts::AlignmentVector::Zero();
     for (const auto& [surface, index] : idxedAlignSurfaces) {
       // (1) The original transform
       const Acts::Vector3D& oldCenter = surface->center(fitOptions.geoContext);
@@ -277,9 +315,9 @@ struct Alignment {
       const Acts::Vector3D& oldEulerAngles = oldRotation.eulerAngles(2, 1, 0);
 
       // (2) The delta transform
-      Acts::AlignmentVector deltaAlignmentParam =
-          alignResult.deltaAlignmentParameters.segment(
-              Acts::eAlignmentParametersSize, index);
+      deltaAlignmentParam = alignResult.deltaAlignmentParameters.segment(
+          Acts::eAlignmentParametersSize * index,
+          Acts::eAlignmentParametersSize);
       // The delta translation
       Acts::Vector3D deltaCenter =
           deltaAlignmentParam.segment<3>(Acts::eAlignmentCenter0);
@@ -301,9 +339,13 @@ struct Alignment {
       Acts::Rotation3D newRotation = rotZ * rotY * rotX;
       const Acts::Transform3D newTransform =
           Acts::Translation3D(newCenter) * newRotation;
+
       // Update the aligned transform
       //@Todo: use a better way to handle this(need dynamic cast to inherited
       // detector element type)
+      ACTS_VERBOSE("Delta of alignment parameters at element "
+                   << index << "= \n"
+                   << deltaAlignmentParam);
       bool updated = alignedTransformUpdater(
           alignedDetElements.at(index), fitOptions.geoContext, newTransform);
       if (not updated) {
@@ -331,7 +373,7 @@ struct Alignment {
   template <typename trajectory_container_t,
             typename start_parameters_container_t, typename fit_options_t>
   Acts::Result<AlignmentResult> align(
-      const trajectory_container_t& trajectoryCollection,
+      trajectory_container_t& trajectoryCollection,
       const start_parameters_container_t& startParametersCollection,
       const AlignmentOptions<fit_options_t>& alignOptions) const {
     // Construct an AlignmentResult object
@@ -339,20 +381,30 @@ struct Alignment {
 
     // Start the iteration to minimize the chi2
     bool converged = false;
+    ACTS_INFO("Max number of iterations: " << alignOptions.maxIterations);
     for (unsigned int iIter = 0; iIter < alignOptions.maxIterations; iIter++) {
       // Perform the fit to the trajectories and update alignment parameters
+      std::bitset<Acts::eAlignmentParametersSize> alignmentMask(
+          std::string("111111"));
+      auto iter_it = alignOptions.iterationState.find(iIter);
+      if (iter_it != alignOptions.iterationState.end()) {
+        alignmentMask = iter_it->second;
+      }
       auto updateRes = updateAlignmentParameters(
           trajectoryCollection, startParametersCollection,
           alignOptions.fitOptions, alignOptions.alignedDetElements,
-          alignOptions.alignedTransformUpdater, alignRes);
+          alignOptions.alignedTransformUpdater, alignRes, alignmentMask);
       if (not updateRes.ok()) {
         ACTS_ERROR("Update alignment parameters failed: " << updateRes.error());
         return updateRes.error();
       }
-      ACTS_VERBOSE("iIter = " << iIter
-                              << ", deltaChi2 = " << alignRes.deltaChi2);
+      ACTS_INFO("iIter = " << iIter << ", total chi2 = " << alignRes.chi2
+                           << ", total measurementDim = "
+                           << alignRes.measurementDim);
+      ACTS_INFO("Average chi2/ndf = " << alignRes.averageChi2ONdf);
       // Check if it has converged against the provided precision
-      if (std::abs(alignRes.deltaChi2) <= alignOptions.deltaChi2CutOff) {
+      // @Todo: should we use the deltaChi2 instead?
+      if (alignRes.averageChi2ONdf <= alignOptions.averageChi2ONdfCutOff) {
         converged = true;
         break;
       }
