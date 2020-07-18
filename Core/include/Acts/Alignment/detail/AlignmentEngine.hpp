@@ -173,8 +173,10 @@ TrackAlignmentState trackAlignmentState(
 
   // The dimension of provided global track parameters covariance should be same
   // as eBoundParametersSize * nSmoothedStates
-  assert(globalTrackParamsCov.rows() == globalTrackParamsCov.cols() and
-         globalTrackParamsCov.rows() == eBoundParametersSize * nSmoothedStates);
+  assert(globalTrackParamsCov.first.rows() ==
+             globalTrackParamsCov.first.cols() and
+         globalTrackParamsCov.first.rows() ==
+             eBoundParametersSize * nSmoothedStates);
   // Unpack global track parameters covariance and the starting row/column for
   // all smoothed states
   const auto& [sourceTrackParamsCov, stateRowIndices] = globalTrackParamsCov;
