@@ -90,6 +90,10 @@ struct AlignmentResult {
   // The change of alignment parameters
   Acts::ActsVectorX<Acts::BoundParametersScalar> deltaAlignmentParameters;
 
+  // The aligned parameters
+  std::unordered_map<Acts::DetectorElementBase*, Acts::Transform3D>
+      alignedParameters;
+
   // The covariance of alignment parameters
   Acts::ActsMatrixX<Acts::BoundParametersScalar> alignmentCovariance;
 
@@ -420,6 +424,8 @@ struct Alignment {
     for (const auto& det : alignOptions.alignedDetElements) {
       const auto& transform =
           det->transform(alignOptions.fitOptions.geoContext);
+      // write it to the result
+      alignRes.alignedParameters.emplace(det, transform);
       const auto& translation = transform.translation();
       const auto& rotation = transform.rotation();
       const Acts::Vector3D rotAngles = rotation.eulerAngles(2, 1, 0);
