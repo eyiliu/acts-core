@@ -57,6 +57,12 @@ class AlignmentAlgorithm final : public BareAlgorithm {
     AlignedTransformUpdater alignedTransformUpdater;
     /// The surfaces (or detector elements?) to be aligned
     std::vector<Acts::DetectorElementBase*> alignedDetElements;
+    /// The alignment mask at each iteration
+    std::map<unsigned int, std::bitset<6>> iterationState;
+    /// Cutoff value for average chi2/ndf
+    double chi2ONdfCutOff = 0.10;
+    /// Maximum number of iterations
+    size_t maxNumIterations = 100;
   };
 
   /// Constructor of the alignment algorithm

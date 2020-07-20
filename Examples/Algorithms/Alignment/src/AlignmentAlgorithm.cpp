@@ -90,7 +90,8 @@ FW::ProcessCode FW::AlignmentAlgorithm::execute(
   // Set the alignment options
   AlignmentOptions<Acts::KalmanFitterOptions<Acts::VoidOutlierFinder>>
       alignOptions(kfOptions, m_cfg.alignedTransformUpdater,
-                   m_cfg.alignedDetElements);
+                   m_cfg.alignedDetElements, m_cfg.chi2ONdfCutOff,
+                   m_cfg.maxNumIterations);
 
   ACTS_DEBUG("Invoke alignment");
   auto result =
