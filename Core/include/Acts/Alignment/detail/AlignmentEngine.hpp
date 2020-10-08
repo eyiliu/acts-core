@@ -216,13 +216,13 @@ TrackAlignmentState trackAlignmentState(
       alignState.alignedSurfaces.at(surface).second = iSurface;
       const BoundParameters& smoothedParams = state.smoothedParameters(gctx);
       Vector3D position = smoothedParams.position();
-      Vector3D momentum = smoothedParams.momentum();
+      Vector3D direction = smoothedParams.momentum().normalized();
       // @Todo: How to get the derivative from stepper?
       FreeVector pathToFree = FreeVector::Zero();
-      pathToFree.segment<3>(0) = momentum;
+      pathToFree.segment<3>(0) = direction;
       const AlignmentToBoundMatrix alignToBound =
           surface->alignmentToBoundDerivative(gctx, pathToFree, position,
-                                              momentum.normalized());
+                                              direction);
       //@Todo: use separate consideration for different surfaces
       AlignmentMatrix project = AlignmentMatrix::Identity();
       for (unsigned int iAlignParam = 0; iAlignParam < 6; iAlignParam++) {
