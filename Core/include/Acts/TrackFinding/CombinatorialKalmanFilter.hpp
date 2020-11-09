@@ -680,12 +680,22 @@ class CombinatorialKalmanFilter {
             // Incremet of number of holes
             tipState.nHoles++;
           } else {
-            // Transport & get curvilinear state instead of bound state
+            auto surfaceType = surface->type();
+	    // @note Potential issue with cylinder surface and cone surface
+            if(surfaceType == Surface::Cylinder or surfaceType == Surface::Cone){
+		  // Transport & get curvilinear state instead of bound state
             auto curvilinearState = stepper.curvilinearState(state.stepping);
-            // Add a passive material track state to the multitrajectory
+	    // Add a passive material track state to the multitrajectory
             currentTip = addPassiveState(stateMask, curvilinearState, result,
                                          prevTip, logger);
-          }
+            } else {
+            // Transport & bind the state to the current surface
+            auto boundState = stepper.boundState(state.stepping, *surface);
+	    // Add a passive material track state to the multitrajectory
+            currentTip = addPassiveState(stateMask, boundState, result,
+                                         prevTip, logger);
+	    } 
+	 }
 
           // Check the branch
           if (not m_branchStopper(tipState)) {
@@ -876,8 +886,9 @@ class CombinatorialKalmanFilter {
     /// @param prevTip The index of the previous state
     ///
     /// @return The tip of added state
+    template < typename state_t> 
     size_t addPassiveState(const TrackStatePropMask& stateMask,
-                           const CurvilinearState& curvilinearState,
+                           const state_t& localState,
                            result_type& result, size_t prevTip = SIZE_MAX,
                            LoggerWrapper logger = getDummyLogger()) const {
       // Add a track state
@@ -894,7 +905,7 @@ class CombinatorialKalmanFilter {
       typeFlags.set(TrackStateFlag::MaterialFlag);
       typeFlags.set(TrackStateFlag::ParameterFlag);
 
-      auto [curvilinearParams, jacobian, pathLength] = curvilinearState;
+      auto [curvilinearParams, jacobian, pathLength] = localState;
       // Fill the track state
       trackStateProxy.predicted() = curvilinearParams.parameters();
       trackStateProxy.predictedCovariance() = *curvilinearParams.covariance();
