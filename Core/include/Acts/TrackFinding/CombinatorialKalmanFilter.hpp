@@ -392,7 +392,26 @@ class CombinatorialKalmanFilter {
             ACTS_VERBOSE("Finish forward Kalman filtering");
             // Remember that track finding is done
             result.finished = true;
-          } else {
+          } else if (targetSurface == nullptr){
+            ACTS_VERBOSE("No target surface");
+	    // Apply smoothing for all tracks
+            for(int it = 0; it < result.trackTips.size(); ++it){
+               ACTS_VERBOSE(
+                  "Finalize/run smoothing for track with entry index = "
+                  << result.trackTips.at(result.iSmoothed));
+              auto res = finalize(state, stepper, result);
+              if (!res.ok()) {
+                ACTS_ERROR("Error in finalize: " << res.error());
+                result.result = res.error();
+              }
+              result.iSmoothed++;
+	    }
+            ACTS_VERBOSE(
+                "Finish forward Kalman filtering and backward smoothing");
+            result.smoothed = true; 
+	    // Remember that track finding is done
+            result.finished = true;
+	  } else {
             // Iterate over the found tracks for smoothing and getting the
             // fitted parameter. This needs to be accomplished in different
             // propagation steps:
